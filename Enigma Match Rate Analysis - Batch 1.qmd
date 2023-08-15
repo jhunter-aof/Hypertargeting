@@ -1,0 +1,63 @@
+---
+title: "Enigma Match Rate Analysis: Batch 1"
+author: "Jacob Hunter"
+format: html
+editor: visual
+---
+
+```{r setup, echo = F}
+source('setup.R')
+```
+
+## Introduction
+
+On August 4, 2023, AOF provided the company [Enigma](https://opportunityfund.atlassian.net/wiki/spaces/DPS/pages/2424766465/Hypertargeting+Pilot+Plans#What-is-Enigma?) with our population of address data of working capital loan applicants. Enigma had offered to provide a sample of their credit card revenue data for those applicants as part of an introduction to a pilot with AOF. This is one of the reports written during the exploration of the data that was returned from Enigma, specifically focusing on match rates.
+
+## The data
+
+This report uses two dataframes: the applications we sent to Enigma and the file that Engima returned to us. We'll refer to the former as `enigma_input` and the latter as `enigma_output`.
+
+```{r}
+enigma_input <- read.csv("Enigma export.csv")
+enigma_output <- read.csv("22d31b53-b4c9-44a3-a318-af320db0d556_AO_Fund_File1_appended_v1.csv")
+```
+
+`enigma_input` is a dataframe containing address information related to businesses associated with working capital applications. AOF has multiple functions in the loan funnel that verify address information, and for this batch of data applicants were consolidated into what was believed to be the most reliable verification level they had received: for instance, loan underwriting would be the most reliable verification, and the automatic GIACT product was considered the least reliable verification.
+
+```{r}
+glimpse(enigma_input)
+```
+
+We provided `r format(nrow(enigma_input), big.mark = ",")` rows of data on `r format(length(unique(enigma_input$app_id)), big.mark = ",")` applications.
+
+`enigma_output` contains time series data, with monthly running averages of e-commerce and credit card revenue metrics. Because of this, it is both wider and far longer of a dataframe:
+
+```{r}
+nrow(enigma_output)
+```
+
+Enigma sent us back `r format(nrow(enigma_output), big.mark = ",")` rows of data on `r format(length(unique(enigma_output$input_app_id)), big.mark = ",")` applications.
+
+There are several fields in `enigma_output` that will be analyzed in other reports.
+
+## Match rate analysis
+
+### Overall match rate
+
+The overall match rate can be defined in two ways:
+
+-   The percentage of address records we sent to Enigma that were successfully matched
+
+-   The percentage of businesses we sent to Enigma that were successfully matched
+
+Recall that some businesses had multiple addresses on record in the file we sent to Enigma, so it's possible that a business had one address match and another not match. For these calculations, let's assume that the .5 `match_confidence` score in the Enigma data denotes an actual match.
+
+#### Addresses
+
+As it is the most simple calculation, let's get the first definition of match rate: the percentage of address records we sent to Enigma that were successfully matched.
+
+```{r}
+table(enigma_output$is_matched)
+```
+
+#### Businesses
