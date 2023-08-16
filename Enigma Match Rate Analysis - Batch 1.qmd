@@ -18,8 +18,11 @@ On August 4, 2023, AOF provided the company [Enigma](https://opportunityfund.atl
 This report uses two dataframes: the applications we sent to Enigma and the file that Engima returned to us. We'll refer to the former as `enigma_input` and the latter as `enigma_output`.
 
 ```{r}
-enigma_input <- read.csv("Enigma export.csv")
+enigma_input <- read.csv("Enigma input batch 1.csv")
 enigma_output <- read.csv("22d31b53-b4c9-44a3-a318-af320db0d556_AO_Fund_File1_appended_v1.csv")
+
+enigma_input <- enigma_input %>% 
+  filter(app_id %in% enigma_output$input_app_id)
 ```
 
 `enigma_input` is a dataframe containing address information related to businesses associated with working capital applications. AOF has multiple functions in the loan funnel that verify address information, and for this batch of data applicants were consolidated into what was believed to be the most reliable verification level they had received: for instance, loan underwriting would be the most reliable verification, and the automatic GIACT product was considered the least reliable verification.
@@ -54,10 +57,326 @@ Recall that some businesses had multiple addresses on record in the file we sent
 
 #### Addresses
 
-As it is the most simple calculation, let's get the first definition of match rate: the percentage of address records we sent to Enigma that were successfully matched.
+As it is the most simple calculation, let's get the first definition of match rate: the percentage of address records we sent to Enigma that were successfully matched. This is done by finding the number of `app_id`'s from `enigma_input` that exist in the `app_id`'s associated to matches in `enigma_output`. There are multiple addresses for some `app_id`'s in `enigma_input`, so this method considers those in both the numerator and denominator.
 
 ```{r}
-table(enigma_output$is_matched)
+table(enigma_input$app_id %in% c(enigma_output %>% filter(is_matched == "true") %>% pull(input_app_id)))
+```
+
+Or, as a proportion:
+
+```{r}
+(sum(enigma_input$app_id %in% c(enigma_output %>% filter(is_matched == "true") %>% pull(input_app_id)))) / nrow(enigma_input)
 ```
 
 #### Businesses
+
+This is calculated so that if any `app_id` in `enigma_input` is associated with a matched address in `enigma_output`, it is assigned as "matched", even if they had 4 non-matches and 1 match.
+
+```{r}
+enigma_input %>% 
+  left_join(
+    enigma_output %>% select(input_app_id, is_matched) %>% distinct(),
+    by = c("app_id" = "input_app_id")
+  ) %>% 
+  group_by(app_id) %>% 
+  summarize(
+    is_matched = any(is_matched == "true")
+  ) %>% ungroup() %>% 
+  pull(is_matched) %>% 
+  table()
+```
+
+Now, as a proportion:
+
+```{r}
+(
+  enigma_input %>% 
+  left_join(
+    enigma_output %>% select(input_app_id, is_matched) %>% distinct(),
+    by = c("app_id" = "input_app_id")
+  ) %>% 
+  group_by(app_id) %>% 
+  summarize(
+    is_matched = any(is_matched == "true")
+  ) %>% ungroup() %>% 
+  pull(is_matched) %>% 
+  sum()
+) / length(unique(enigma_input$app_id))
+```
+
+**The match rate is about \~58% for addresses and negligibly lower for businesses. This discrepancy shows that, where there are duplicate addresses for businesses, they are matching more often than not.**
+
+## Match rate by address source
+
+AOF provided address data consolidated from four different sources:
+
+-   NLS
+
+-   Experian
+
+-   GIACT
+
+-   User-reported data stored in CDATA
+
+Generally, applications are verified through each of these sources from bottom to top of the bulletted list as they progress through the application funnel. The first address they provide will be the user-reported data, then they will be verified through GIACT, etc. This is not hard-and-fast, but works as a general rule.
+
+The file AOF sent to Enigma in the first batch coalesced the address data for each source from most verified to least verified. For example, if an application had an Experian pull on file and they also had contact data in NLS, we removed the Experian pull data and gave Enigma only the NLS data. In batch 2 AOF sent Enigma all address records from all sources. Once Enigma provides the output from that batch, this section will have much more data behind it.
+
+We can calculate these match rates both by addresses and by businesses, similar to the overall match rates.
+
+```{r}
+enigma_output %>% 
+  select(
+    input_app_id, 
+    input_business_name,
+    input_street,
+    input_city,
+    input_state,
+    input_zip,
+    input_address_source,
+    is_matched) %>% 
+  distinct() %>% 
+  group_by(input_address_source) %>% 
+  summarize(
+    match_rate = sum(is_matched == "true") / n(),
+    count = n()
+  ) %>% 
+  ungroup() %>% 
+  mutate(
+    input_address_source = factor(
+      input_address_source, levels = c("CDATA", "GIACT", "Experian", "NLS")
+    )
+  )
+```
+
+```{r echo = F, fig.alight = 'center'}
+enigma_output %>% 
+  select(
+    input_app_id, 
+    input_business_name,
+    input_street,
+    input_city,
+    input_state,
+    input_zip,
+    input_address_source,
+    is_matched) %>% 
+  distinct() %>% 
+  group_by(input_address_source) %>% 
+  summarize(
+    match_rate = sum(is_matched == "true") / n(),
+    count = n()
+  ) %>% 
+  ungroup() %>% 
+  mutate(
+    input_address_source = factor(
+      input_address_source, levels = c("CDATA", "GIACT", "Experian", "NLS")
+    )
+  ) %>% 
+  ggplot(
+    aes(
+      x = input_address_source,
+      y = match_rate,
+      fill = input_address_source
+    )
+  ) +
+  scale_y_continuous(labels = percent) +
+  scale_fill_manual(values = aof_palette) +
+  geom_bar(stat = "identity", color = 'black') +
+  labs(
+    title = "Enigma match rate across address sources",
+    subtitle = "Batch 1, coalesced data",
+    x = "Address source",
+    y = "Match rate",
+    caption = "Matching per address, not per business"
+  ) +
+  theme_aof() +
+  theme(legend.position = "none")
+```
+
+CDATA has far more rows attributed to it, as we are looking at all stages of the funnel and the top two stages (apps created and apps submitted) are much larger and have no address verification.
+
+## Match confidence
+
+Enigma uses a model to match the businesses AOF provides to its own data. They also provide a confidence score with each match that is on a scale from 0 - 1, with .5 being the default threshold for counting as a match. *If an input does not match, then it does not return with a match confidence score.*
+
+The distribution of match scores is summarized below:
+
+```{r message = F, warning = F}
+enigma_output %>% 
+  select(input_app_id, match_confidence) %>% 
+  distinct() %>% 
+  ggplot(aes(x = match_confidence)) +
+  geom_histogram(fill = aof_palette[[3]], color = 'black') +
+  labs(
+    title = "Distribution of match confidence scores",
+    x = "Match confidence",
+    y = "Count"
+  ) +
+  theme_aof()
+```
+
+```{r}
+enigma_output %>% 
+  select(input_app_id, match_confidence) %>% 
+  distinct() %>% pull(match_confidence) %>% summary()
+```
+
+What do the low confidence matches look like? Say, below .85 confidence?
+
+```{r}
+enigma_output %>% 
+  filter(match_confidence < .85) %>% 
+  select(
+    input_street, matched_fields__address__street_address1,
+    input_city, matched_fields__address__city
+  )
+```
+
+## Match rate by funnel status
+
+AOF also included status order data in the file for Enigma. It is contained in a field called `status_order` (or `input_status_order` in `enigma_output`) and it is an integer of 1 to 9 depending on how far in the funnel an application was at the time of creating the file for Enigma. Each status order corresponds to a certain part of the application funnel. See below:
+
+1.  Created
+
+2.  Submitted
+
+3.  Approved (Pre-Check)
+
+4.  Approved (Pre-Qual)
+
+5.  Offer Selected
+
+6.  Entered Pre-UW
+
+7.  Entered UW
+
+8.  Approved (UW)
+
+9.  Funded
+
+```{r echo = F}
+clo_funnel <- data.frame(
+  status = factor(
+    c(
+      "Created",
+      "Submitted",
+      "Approved (Pre-Check)",
+      "Approved (Pre-Qual)",
+      "Offer Selected",
+      "Entered Pre-UW",
+      "Entered UW",
+      "Approved (UW)",
+      "Funded"
+    ),
+    levels = c(
+      "Created",
+      "Submitted",
+      "Approved (Pre-Check)",
+      "Approved (Pre-Qual)",
+      "Offer Selected",
+      "Entered Pre-UW",
+      "Entered UW",
+      "Approved (UW)",
+      "Funded"
+    )
+  ),
+  status_order = 1:9
+)
+```
+
+In theory, we might expect that match rate rises as applications progress through the funnel. We can summarize the data to test this theory.
+
+```{r}
+enigma_output %>% 
+  select(
+    input_app_id, 
+    input_business_name,
+    input_street,
+    input_city,
+    input_state,
+    input_zip,
+    input_address_source,
+    is_matched,
+    input_status_order) %>% 
+  distinct() %>% 
+  left_join(clo_funnel, by = c("input_status_order" = "status_order")) %>% 
+  group_by(status) %>% 
+  summarize(
+    match_rate = sum(is_matched == "true") / n(),
+    count = n()
+  ) %>% 
+  mutate(match_rate = percent(match_rate, accuracy = .01)) %>% 
+  ungroup()
+```
+
+We can also visualize this in another bar chart, including color to denote address sources.
+
+```{r fig.align = "center", fig.height = 6}
+enigma_output %>% 
+  select(
+    input_app_id, 
+    input_business_name,
+    input_street,
+    input_city,
+    input_state,
+    input_zip,
+    input_address_source,
+    is_matched,
+    input_status_order) %>% 
+  distinct() %>% 
+  left_join(clo_funnel, by = c("input_status_order" = "status_order")) %>% 
+  group_by(status) %>% 
+  mutate(status_count = n()) %>% 
+  group_by(status, input_address_source) %>% 
+  summarize(
+    match_rate = sum(is_matched == "true") / max(status_count)
+  ) %>% 
+  ungroup() %>% 
+  mutate(
+    input_address_source = factor(
+      input_address_source, levels = c("CDATA", "GIACT", "Experian", "NLS")
+    )
+  ) %>% 
+  ggplot(
+    aes(
+      x = status,
+      y = match_rate,
+      fill = input_address_source
+    )
+  ) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  scale_y_continuous(labels = percent) +
+  scale_fill_manual(values = aof_palette) +
+  geom_bar(position = "stack", stat = "identity", color = 'black') +
+  labs(
+    title = "Enigma match rate across funnel statuses",
+    subtitle = "Batch 1, coalesced data",
+    x = "Funnel status",
+    y = "Match rate",
+    caption = "Matching per address, not per business",
+    fill = "Address source"
+  ) +
+  theme_aof() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 35)
+  )
+```
+
+## Credit card data availability
+
+The main reason AOF is working with Enigma is to get a reliable estimate of credit card revenue. Per Enigma documentation, the card revenue fields are `null` if the business had fewer than 30 transactions during that period (either 1, 3, or 12 months).
+
+```{r}
+enigma_output %>% 
+  filter(enigma_id != "") %>% 
+  group_by(enigma_id, is_matched) %>% 
+  summarize(
+    no_credit_data = all(is.na(card_revenue___1m__average_monthly_amount)) & all(is.na(card_revenue___3m__average_monthly_amount)) & all(is.na(card_revenue___12m__average_monthly_amount)),
+    .groups = "drop"
+  ) %>% 
+  filter(is_matched == "true") %>% 
+  pull(no_credit_data) %>% 
+  table()
+```
